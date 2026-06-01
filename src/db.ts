@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import type { ProviderMeta } from "./embeddings/index.js";
+import type { CodeSymbol, SymbolKind } from "./symbols/extractor.js";
 
 export interface Chunk {
   id: number;
@@ -15,6 +16,14 @@ export interface Chunk {
 
 export interface SearchResult extends Chunk {
   score: number;
+}
+
+export interface SymbolRow {
+  filePath: string;
+  name: string;
+  kind: SymbolKind;
+  line: number;
+  signature: string;
 }
 
 const SCHEMA = `
@@ -50,6 +59,20 @@ END;
 CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
   INSERT INTO chunks_fts(chunks_fts, rowid, chunk_text) VALUES ('delete', old.id, old.chunk_text);
 END;
+
+CREATE TABLE IF NOT EXISTS symbols (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_path  TEXT    NOT NULL,
+  name       TEXT    NOT NULL,
+  kind       TEXT    NOT NULL,
+  line       INTEGER NOT NULL,
+  signature  TEXT    NOT NULL,
+  file_mtime INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
+CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
 `;
 
 export class CodeSearchDb {
@@ -83,8 +106,10 @@ export class CodeSearchDb {
     return row?.file_mtime ?? null;
   }
 
+  /** Delete all chunks AND symbols for a file. */
   deleteFile(filePath: string): void {
     this.db.prepare("DELETE FROM chunks WHERE file_path = ?").run(filePath);
+    this.db.prepare("DELETE FROM symbols WHERE file_path = ?").run(filePath);
   }
 
   insertChunks(
@@ -117,6 +142,140 @@ export class CodeSearchDb {
       }
     });
     insertMany(chunks);
+  }
+
+  insertSymbols(
+    symbols: Array<CodeSymbol & { filePath: string; fileMtime: number }>,
+  ): void {
+    const insert = this.db.prepare(
+      `INSERT INTO symbols (file_path, name, kind, line, signature, file_mtime)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    const insertMany = this.db.transaction((rows: typeof symbols) => {
+      for (const s of rows) {
+        insert.run(
+          s.filePath,
+          s.name,
+          s.kind,
+          s.line,
+          s.signature,
+          s.fileMtime,
+        );
+      }
+    });
+    insertMany(symbols);
+  }
+
+  querySymbols(opts: {
+    name?: string;
+    kind?: string;
+    pathFilter?: string;
+    limit?: number;
+  }): SymbolRow[] {
+    const { name, kind, pathFilter, limit = 100 } = opts;
+
+    let sql =
+      "SELECT file_path, name, kind, line, signature FROM symbols WHERE 1=1";
+    const params: (string | number)[] = [];
+
+    if (name) {
+      sql += " AND name LIKE ? COLLATE NOCASE";
+      params.push(`%${name}%`);
+    }
+    if (kind) {
+      sql += " AND kind = ?";
+      params.push(kind);
+    }
+    if (pathFilter) {
+      sql += " AND file_path LIKE ?";
+      params.push(`%${pathFilter}%`);
+    }
+
+    sql += " ORDER BY file_path, line LIMIT ?";
+    params.push(limit);
+
+    const rows = this.db.prepare(sql).all(...params) as Array<{
+      file_path: string;
+      name: string;
+      kind: string;
+      line: number;
+      signature: string;
+    }>;
+
+    return rows.map((r) => ({
+      filePath: r.file_path,
+      name: r.name,
+      kind: r.kind as SymbolKind,
+      line: r.line,
+      signature: r.signature,
+    }));
+  }
+
+  getFileOutline(pathFilter: string): SymbolRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT file_path, name, kind, line, signature
+         FROM symbols
+         WHERE file_path LIKE ?
+         ORDER BY file_path, line`,
+      )
+      .all(`%${pathFilter}%`) as Array<{
+      file_path: string;
+      name: string;
+      kind: string;
+      line: number;
+      signature: string;
+    }>;
+
+    return rows.map((r) => ({
+      filePath: r.file_path,
+      name: r.name,
+      kind: r.kind as SymbolKind,
+      line: r.line,
+      signature: r.signature,
+    }));
+  }
+
+  /** FTS search for a symbol name — used by code_references. */
+  searchFtsForName(name: string, topK: number): SearchResult[] {
+    // Wrap in quotes for exact phrase match, escape any internal quotes
+    const escaped = name.replace(/"/g, '""');
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT c.id, c.file_path, c.chunk_text, c.start_line, c.end_line,
+                  c.file_mtime, c.embedding_provider,
+                  bm25(chunks_fts) AS score
+           FROM chunks_fts
+           JOIN chunks c ON c.id = chunks_fts.rowid
+           WHERE chunks_fts MATCH ?
+           ORDER BY score
+           LIMIT ?`,
+        )
+        .all(`"${escaped}"`, topK) as Array<{
+        id: number;
+        file_path: string;
+        chunk_text: string;
+        start_line: number;
+        end_line: number;
+        file_mtime: number;
+        embedding_provider: string;
+        score: number;
+      }>;
+
+      return rows.map((row) => ({
+        id: row.id,
+        filePath: row.file_path,
+        chunkText: row.chunk_text,
+        startLine: row.start_line,
+        endLine: row.end_line,
+        fileMtime: row.file_mtime,
+        embeddingProvider: row.embedding_provider,
+        score: -row.score,
+      }));
+    } catch {
+      return [];
+    }
   }
 
   /** Brute-force cosine similarity scan — fine for <50k chunks. */
@@ -191,7 +350,7 @@ export class CodeSearchDb {
       endLine: row.end_line,
       fileMtime: row.file_mtime,
       embeddingProvider: row.embedding_provider,
-      score: -row.score, // bm25 returns negative values (lower = better match)
+      score: -row.score,
     }));
   }
 
@@ -206,6 +365,13 @@ export class CodeSearchDb {
     const row = this.db
       .prepare("SELECT COUNT(DISTINCT file_path) as n FROM chunks")
       .get() as { n: number };
+    return row.n;
+  }
+
+  symbolCount(): number {
+    const row = this.db.prepare("SELECT COUNT(*) as n FROM symbols").get() as {
+      n: number;
+    };
     return row.n;
   }
 

@@ -4,6 +4,7 @@ import { glob } from "glob";
 import { chunkFile } from "./chunker.js";
 import { CodeSearchDb } from "./db.js";
 import type { EmbeddingProvider } from "./embeddings/index.js";
+import { extractSymbols } from "./symbols/extractor.js";
 
 const BATCH_SIZE = 32;
 
@@ -79,12 +80,21 @@ export async function indexPath(
 
       const content = fs.readFileSync(filePath, "utf-8");
       const chunks = chunkFile(content);
+
+      db.deleteFile(filePath);
+
+      // Symbol extraction — runs for all indexed files regardless of chunk count
+      const symbols = extractSymbols(content, filePath);
+      if (symbols.length > 0) {
+        db.insertSymbols(
+          symbols.map((s) => ({ ...s, filePath, fileMtime: mtime })),
+        );
+      }
+
       if (chunks.length === 0) {
         skipped++;
         continue;
       }
-
-      db.deleteFile(filePath);
 
       // Embed in batches
       for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
