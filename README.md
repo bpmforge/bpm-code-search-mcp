@@ -55,17 +55,56 @@ code_references("UserService")
 
 ## Requirements
 
-- Node 20+
-- LM Studio running `text-embedding-nomic-embed-text-v1.5` on port 1234 for vector search
-- BM25 keyword search works without LM Studio
+- Node 20–24 LTS
+
+## Embedding setup
+
+Vector search is optional — **BM25 keyword search works with no setup at all**.
+
+### Default: LM Studio (free, local)
+1. Download [LM Studio](https://lmstudio.ai) and load `nomic-ai/nomic-embed-text-v1.5-GGUF`
+2. No config needed — defaults point to `http://localhost:1234`
+
+### Alternative models
+Set env vars to use a different model:
+```bash
+export LM_STUDIO_URL="http://localhost:1234"
+export LM_STUDIO_MODEL="CompendiumLabs/bge-large-en-v1.5-gguf"  # example
+```
+
+| Model | Dimensions | Notes |
+|-------|-----------|-------|
+| `nomic-ai/nomic-embed-text-v1.5` | 768 | Default — good balance |
+| `CompendiumLabs/bge-large-en-v1.5-gguf` | 1024 | Better quality, slower |
+| `CompendiumLabs/bge-small-en-v1.5-gguf` | 384 | Fastest, smaller |
+
+### OpenAI embeddings
+```bash
+export LM_STUDIO_URL="https://api.openai.com/v1"
+export LM_STUDIO_MODEL="text-embedding-3-small"
+export OPENAI_API_KEY="sk-..."
+```
+
+### No embeddings (BM25 only)
+```bash
+export EMBEDDING_PROVIDER=none
+```
+
+> **Provider-sticky:** The embedding model used at index time is locked in. If you change models, re-index with `code_index(force=true)` to rebuild from scratch.
+
+### Remote LM Studio server
+```bash
+export LM_STUDIO_URL="http://192.168.1.x:1234"
+```
 
 ## Environment variables
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `CODE_SEARCH_ROOT` | `cwd` | Project root to index |
-| `LM_STUDIO_URL` | `http://localhost:1234` | LM Studio base URL |
-| `LM_STUDIO_MODEL` | `text-embedding-nomic-embed-text-v1.5` | Embedding model |
+| `LM_STUDIO_URL` | `http://localhost:1234` | Embedding API base URL |
+| `LM_STUDIO_MODEL` | `text-embedding-nomic-embed-text-v1.5` | Embedding model name |
+| `EMBEDDING_PROVIDER` | _(auto-detect)_ | Set to `none` to disable vectors |
 
 ## License
 
