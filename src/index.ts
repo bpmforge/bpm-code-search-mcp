@@ -8,6 +8,7 @@ import { detectProvider } from "./embeddings/index.js";
 import type { EmbeddingProvider } from "./embeddings/index.js";
 import { indexPath } from "./indexer.js";
 import { search } from "./search.js";
+import { extractRefLines, formatRefLines, snippet } from "./format.js";
 
 const ROOT = process.env.CODE_SEARCH_ROOT ?? process.cwd();
 const DB_PATH = path.join(ROOT, ".code-search", "index.db");
@@ -95,7 +96,7 @@ server.tool(
       const formatted = results
         .map(
           (r, i) =>
-            `[${i + 1}] ${r.filePath}:${r.startLine}-${r.endLine} (score: ${r.score.toFixed(3)})\n\`\`\`\n${r.chunkText}\n\`\`\``,
+            `[${i + 1}] ${r.filePath}:${r.startLine}-${r.endLine} (score: ${r.score.toFixed(3)})\n\`\`\`\n${snippet(r.chunkText)}\n\`\`\``,
         )
         .join("\n\n");
 
@@ -401,37 +402,31 @@ server.tool(
         };
       }
 
-      let results = db.searchFtsForName(name, top_k * 3);
-
+      // Over-fetch chunks that mention the name (FTS), then extract the actual
+      // referencing LINES from them rather than dumping whole chunks.
+      let hits = db.searchFtsForName(name, top_k * 3);
       if (path_filter) {
-        results = results.filter((r) => r.filePath.includes(path_filter));
+        hits = hits.filter((r) => r.filePath.includes(path_filter));
       }
 
-      results = results.slice(0, top_k);
+      // Which lines are the symbol's own definition? Tag [def] vs [use].
+      const defKeys = new Set(
+        db
+          .querySymbols({ name, limit: 300 })
+          .filter((s) => s.name === name)
+          .map((s) => `${s.filePath}:${s.line}`),
+      );
 
-      if (results.length === 0) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `No references found for "${name}". Check spelling or try code_search for a semantic search.`,
-            },
-          ],
-        };
-      }
-
-      const formatted = results
-        .map(
-          (r, i) =>
-            `[${i + 1}] ${r.filePath}:${r.startLine}-${r.endLine}\n\`\`\`\n${r.chunkText}\n\`\`\``,
-        )
-        .join("\n\n");
+      const { refs, truncated } = extractRefLines(hits, name, defKeys, {
+        maxRefs: top_k,
+        contextLines: 2,
+      });
 
       return {
         content: [
           {
             type: "text" as const,
-            text: `References to "${name}" (${results.length} chunks):\n\n${formatted}`,
+            text: formatRefLines(name, refs, truncated),
           },
         ],
       };

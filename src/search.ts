@@ -34,8 +34,16 @@ export async function search(
     }
   }
 
-  const [[queryEmbedding]] = [await provider.embed([query])];
-  const vec = new Float32Array(queryEmbedding);
+  // Embed the query. If the provider died mid-session (e.g. LM Studio stopped
+  // after startup), degrade to keyword search instead of erroring — recall must
+  // never hard-fail just because the embedder went away.
+  let vec: Float32Array;
+  try {
+    const [[queryEmbedding]] = [await provider.embed([query])];
+    vec = new Float32Array(queryEmbedding);
+  } catch {
+    return db.searchFts(query, topK);
+  }
   let results = db.search(vec, topK * 2); // over-fetch before path filter
 
   if (options.pathFilter) {
