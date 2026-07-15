@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import * as sqliteVec from "sqlite-vec";
 import path from "path";
 import fs from "fs";
 import type { ProviderMeta } from "./embeddings/index.js";
@@ -77,13 +78,65 @@ CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
 
 export class CodeSearchDb {
   private db: Database.Database;
+  /** True when the sqlite-vec ANN extension loaded (falls back to brute force if not). */
+  private vecEnabled = false;
+  /** Dimension of the current vec_chunks table, if built. */
+  private vecDim: number | null = null;
 
   constructor(dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("synchronous = NORMAL");
-    this.db.exec(SCHEMA);
+    this.db.exec(SCHEMA); // create tables first — the vec-dim read below needs `meta`
+    // Load the sqlite-vec ANN extension. If it can't load (platform/ABI), the
+    // engine still works — every vector query falls back to the brute-force
+    // cosine scan. ANN is a pure speedup, never a correctness dependency.
+    try {
+      sqliteVec.load(this.db);
+      this.vecEnabled = true;
+      const row = this.db
+        .prepare("SELECT value FROM meta WHERE key = 'vec_dim'")
+        .get() as { value: string } | undefined;
+      if (row) this.vecDim = Number(row.value);
+    } catch {
+      this.vecEnabled = false;
+    }
+  }
+
+  get annEnabled(): boolean {
+    return this.vecEnabled;
+  }
+
+  private vecTableExists(): boolean {
+    return (
+      this.vecEnabled &&
+      !!this.db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE name = 'vec_chunks' LIMIT 1",
+        )
+        .get()
+    );
+  }
+
+  /**
+   * Ensure the vec0 ANN table exists for `dim`. Uses cosine distance so ANN
+   * scores match the brute-force cosine scan. Recreates it if the dimension
+   * changed (provider swap). No-op when the extension didn't load.
+   */
+  private ensureVecTable(dim: number): void {
+    if (!this.vecEnabled) return;
+    if (this.vecDim === dim && this.vecTableExists()) return;
+    if (this.vecDim !== null && this.vecDim !== dim) {
+      this.db.exec("DROP TABLE IF EXISTS vec_chunks");
+    }
+    this.db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(embedding float[${dim}] distance_metric=cosine)`,
+    );
+    this.db
+      .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('vec_dim', ?)")
+      .run(String(dim));
+    this.vecDim = dim;
   }
 
   getProviderMeta(): ProviderMeta | null {
@@ -106,8 +159,15 @@ export class CodeSearchDb {
     return row?.file_mtime ?? null;
   }
 
-  /** Delete all chunks AND symbols for a file. */
+  /** Delete all chunks AND symbols for a file (plus its ANN rows). */
   deleteFile(filePath: string): void {
+    if (this.vecTableExists()) {
+      const ids = this.db
+        .prepare("SELECT id FROM chunks WHERE file_path = ?")
+        .all(filePath) as Array<{ id: number }>;
+      const del = this.db.prepare("DELETE FROM vec_chunks WHERE rowid = ?");
+      for (const { id } of ids) del.run(BigInt(id));
+    }
     this.db.prepare("DELETE FROM chunks WHERE file_path = ?").run(filePath);
     this.db.prepare("DELETE FROM symbols WHERE file_path = ?").run(filePath);
   }
@@ -123,22 +183,35 @@ export class CodeSearchDb {
       embedding: Float32Array;
     }>,
   ): void {
+    if (this.vecEnabled && chunks.length > 0) {
+      this.ensureVecTable(chunks[0]!.embedding.length);
+    }
     const insert = this.db.prepare(
       `INSERT INTO chunks
          (file_path, chunk_text, start_line, end_line, file_mtime, embedding_provider, embedding)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
+    const vecInsert = this.vecTableExists()
+      ? this.db.prepare(
+          "INSERT INTO vec_chunks(rowid, embedding) VALUES (?, ?)",
+        )
+      : null;
     const insertMany = this.db.transaction((rows: typeof chunks) => {
       for (const row of rows) {
-        insert.run(
+        const buf = Buffer.from(row.embedding.buffer);
+        const info = insert.run(
           row.filePath,
           row.chunkText,
           row.startLine,
           row.endLine,
           row.fileMtime,
           row.embeddingProvider,
-          Buffer.from(row.embedding.buffer),
+          buf,
         );
+        // Mirror the embedding into the ANN index (rowid = chunk id).
+        if (vecInsert && this.vecDim === row.embedding.length) {
+          vecInsert.run(BigInt(info.lastInsertRowid), buf);
+        }
       }
     });
     insertMany(chunks);
@@ -278,8 +351,56 @@ export class CodeSearchDb {
     }
   }
 
-  /** Brute-force cosine similarity scan — fine for <50k chunks. */
+  /**
+   * Vector search entry point. Uses the sqlite-vec ANN index when it's built
+   * and populated (sub-linear); otherwise falls back to the brute-force cosine
+   * scan. Both use cosine distance, so scores are comparable across the two.
+   */
   search(queryEmbedding: Float32Array, topK: number): SearchResult[] {
+    if (this.vecTableExists()) {
+      try {
+        const rows = this.db
+          .prepare(
+            `SELECT c.id, c.file_path, c.chunk_text, c.start_line, c.end_line,
+                    c.file_mtime, c.embedding_provider, v.distance
+             FROM vec_chunks v
+             JOIN chunks c ON c.id = v.rowid
+             WHERE v.embedding MATCH ?
+             ORDER BY v.distance
+             LIMIT ?`,
+          )
+          .all(Buffer.from(queryEmbedding.buffer), topK) as Array<{
+          id: number;
+          file_path: string;
+          chunk_text: string;
+          start_line: number;
+          end_line: number;
+          file_mtime: number;
+          embedding_provider: string;
+          distance: number;
+        }>;
+        if (rows.length > 0) {
+          return rows.map((row) => ({
+            id: row.id,
+            filePath: row.file_path,
+            chunkText: row.chunk_text,
+            startLine: row.start_line,
+            endLine: row.end_line,
+            fileMtime: row.file_mtime,
+            embeddingProvider: row.embedding_provider,
+            score: 1 - row.distance, // cosine distance → cosine similarity
+          }));
+        }
+        // Table exists but empty (index predates ANN) → brute-force below.
+      } catch {
+        // ANN query failed for any reason → brute-force below.
+      }
+    }
+    return this.searchBrute(queryEmbedding, topK);
+  }
+
+  /** Brute-force cosine similarity scan — fallback / <50k chunks. */
+  searchBrute(queryEmbedding: Float32Array, topK: number): SearchResult[] {
     const rows = this.db
       .prepare(
         `SELECT id, file_path, chunk_text, start_line, end_line, file_mtime,
