@@ -46,7 +46,7 @@ const server = new McpServer({ name: "bpm-code-search-mcp", version: "0.2.0" });
 
 server.tool(
   "code_search",
-  "Search the codebase by meaning, not just keywords. Returns the most relevant code chunks with file paths and line numbers.",
+  "Hybrid search over the codebase — fuses semantic (vector) and keyword (BM25) ranking so it finds both meaning and exact identifiers. Returns the most relevant code chunks with file paths and line numbers.",
   {
     query: z
       .string()

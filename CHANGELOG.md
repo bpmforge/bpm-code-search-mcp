@@ -4,6 +4,27 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-07-14
+
+Tier B — hybrid search (staged code-search enhancement plan, 2 of 3).
+
+### Changed
+
+- **`code_search` is now hybrid: semantic (vector) + keyword (BM25) fused with
+  Reciprocal Rank Fusion.** Before, it was vector-only (or FTS-only as a cold
+  fallback) — so an exact identifier the paraphrased query embedding missed
+  wouldn't surface. RRF (k=60) needs no cross-engine score normalization (cosine
+  vs BM25), so both rankings contribute cleanly; a chunk that ranks in both lists
+  floats to the top. Degrades exactly as before: no embedder/index →
+  keyword-only, empty keyword hits → vector-only.
+- **Natural-language queries can no longer break FTS.** The keyword side now
+  runs through an FTS5-safe sanitizer (word tokens quoted + OR-ed), so a query
+  like `how does auth work?` no longer risks throwing on FTS operator characters.
+
+### Tests
+
+- `toFtsQuery`, `rrfFuse` (both-lists-rank-higher, de-dup), and a both-sides
+  fusion path. 51 tests green.
 ## [0.2.0] — 2026-07-14
 
 Tier A — response quality & robustness (staged code-search enhancement plan, 1 of 3).
