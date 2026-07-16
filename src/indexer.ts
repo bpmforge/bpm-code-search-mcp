@@ -5,6 +5,7 @@ import { chunkFile } from "./chunker/index.js";
 import { CodeSearchDb } from "./db.js";
 import type { EmbeddingProvider } from "./embeddings/index.js";
 import { extractSymbols } from "./symbols/extractor.js";
+import { extractGraph } from "./symbols/graph.js";
 
 const BATCH_SIZE = 32;
 
@@ -88,6 +89,33 @@ export async function indexPath(
       if (symbols.length > 0) {
         db.insertSymbols(
           symbols.map((s) => ({ ...s, filePath, fileMtime: mtime })),
+        );
+      }
+
+      // Symbol graph (defs/refs/calls/imports) — see docs/LODESTONE_DESIGN.md
+      // §4 item 4. Additive: runs for all indexed files regardless of chunk
+      // count, mirrors the symbols block above. Never crashes the indexer —
+      // extractGraph() falls back to a regex tier internally and this is
+      // still wrapped defensively.
+      try {
+        const graph = await extractGraph(content, filePath);
+        if (graph.defs.length > 0) {
+          db.insertDefs(graph.defs.map((d) => ({ ...d, fileMtime: mtime })));
+        }
+        if (graph.refs.length > 0) {
+          db.insertRefs(graph.refs.map((r) => ({ ...r, fileMtime: mtime })));
+        }
+        if (graph.calls.length > 0) {
+          db.insertCalls(graph.calls.map((c) => ({ ...c, fileMtime: mtime })));
+        }
+        if (graph.imports.length > 0) {
+          db.insertImports(
+            graph.imports.map((i) => ({ ...i, fileMtime: mtime })),
+          );
+        }
+      } catch (err) {
+        errors.push(
+          `${filePath} (symbol graph): ${err instanceof Error ? err.message : String(err)}`,
         );
       }
 
