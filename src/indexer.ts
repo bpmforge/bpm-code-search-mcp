@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { glob } from "glob";
-import { chunkFile } from "./chunker.js";
+import { chunkFile } from "./chunker/index.js";
 import { CodeSearchDb } from "./db.js";
 import type { EmbeddingProvider } from "./embeddings/index.js";
 import { extractSymbols } from "./symbols/extractor.js";
@@ -79,7 +79,7 @@ export async function indexPath(
       }
 
       const content = fs.readFileSync(filePath, "utf-8");
-      const chunks = chunkFile(content);
+      const chunks = await chunkFile(content, filePath);
 
       db.deleteFile(filePath);
 
