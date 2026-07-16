@@ -110,6 +110,13 @@ export async function indexPath(
             fileMtime: mtime,
             embeddingProvider: provider.name,
             embedding: new Float32Array(embeddings[j]),
+            // Symbols declared within this chunk's line range populate the
+            // FTS5 symbols/subtokens columns (BM25F weighting — see db.ts).
+            symbols: symbols
+              .filter(
+                (s) => s.line >= chunk.startLine && s.line <= chunk.endLine,
+              )
+              .map((s) => s.name),
           })),
         );
       }

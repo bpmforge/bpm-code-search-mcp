@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import type { ProviderMeta } from "./embeddings/index.js";
 import type { CodeSymbol, SymbolKind } from "./symbols/extractor.js";
+import { subtokenText } from "./search/subtokens.js";
 
 export interface Chunk {
   id: number;
@@ -37,6 +38,8 @@ CREATE TABLE IF NOT EXISTS chunks (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   file_path         TEXT    NOT NULL,
   chunk_text        TEXT    NOT NULL,
+  symbols_text      TEXT    NOT NULL DEFAULT '',
+  subtokens_text    TEXT    NOT NULL DEFAULT '',
   start_line        INTEGER NOT NULL,
   end_line          INTEGER NOT NULL,
   file_mtime        INTEGER NOT NULL,
@@ -47,18 +50,29 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
 CREATE INDEX IF NOT EXISTS idx_chunks_mtime ON chunks(file_path, file_mtime);
 
+-- BM25F-style weighted columns: symbols (raw identifiers, high weight),
+-- subtokens (camelCase/snake_case split, mid weight), body (chunk text,
+-- low weight). porter+unicode61 stems query terms so "validation" matches
+-- an indexed "validate" subtoken without any embedding model. See
+-- docs/LODESTONE_DESIGN.md §4.2 and CodeSearchDb.searchFts/searchFtsForName
+-- for the per-column bm25() weights applied at query time.
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-  chunk_text,
+  symbols,
+  subtokens,
+  body,
   content=chunks,
-  content_rowid=id
+  content_rowid=id,
+  tokenize='porter unicode61'
 );
 
 CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
-  INSERT INTO chunks_fts(rowid, chunk_text) VALUES (new.id, new.chunk_text);
+  INSERT INTO chunks_fts(rowid, symbols, subtokens, body)
+  VALUES (new.id, new.symbols_text, new.subtokens_text, new.chunk_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
-  INSERT INTO chunks_fts(chunks_fts, rowid, chunk_text) VALUES ('delete', old.id, old.chunk_text);
+  INSERT INTO chunks_fts(chunks_fts, rowid, symbols, subtokens, body)
+  VALUES ('delete', old.id, old.symbols_text, old.subtokens_text, old.chunk_text);
 END;
 
 CREATE TABLE IF NOT EXISTS symbols (
@@ -76,6 +90,15 @@ CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
 `;
 
+// bm25() column weights, in chunks_fts column order [symbols, subtokens, body].
+// Higher weight = a hit in that column pulls the fused score further negative
+// (FTS5 bm25 is a "lower is better" cost; results are ORDER BY score ASC and
+// negated for display) so raw-identifier hits outrank subtoken hits, which
+// outrank plain body-text hits, for the same query term.
+const BM25_SYMBOLS_WEIGHT = 10.0;
+const BM25_SUBTOKENS_WEIGHT = 5.0;
+const BM25_BODY_WEIGHT = 1.0;
+
 export class CodeSearchDb {
   private db: Database.Database;
   /** True when the sqlite-vec ANN extension loaded (falls back to brute force if not). */
@@ -88,7 +111,19 @@ export class CodeSearchDb {
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("synchronous = NORMAL");
+    const needsFtsBackfill = this.migrateLegacyFts();
     this.db.exec(SCHEMA); // create tables first — the vec-dim read below needs `meta`
+    if (needsFtsBackfill) {
+      // Pre-BM25F index: chunks survive, but the old single-column FTS5
+      // table was dropped above and just got recreated with the new
+      // symbols/subtokens/body schema. Backfill body from existing
+      // chunk_text so search keeps working immediately; symbols/subtokens
+      // stay empty until each file is next re-indexed (mtime-driven).
+      this.db.exec(
+        `INSERT INTO chunks_fts(rowid, symbols, subtokens, body)
+         SELECT id, symbols_text, subtokens_text, chunk_text FROM chunks`,
+      );
+    }
     // Load the sqlite-vec ANN extension. If it can't load (platform/ABI), the
     // engine still works — every vector query falls back to the brute-force
     // cosine scan. ANN is a pure speedup, never a correctness dependency.
@@ -106,6 +141,31 @@ export class CodeSearchDb {
 
   get annEnabled(): boolean {
     return this.vecEnabled;
+  }
+
+  /**
+   * Upgrade an on-disk index created before the BM25F schema (single-column
+   * `chunks_fts(chunk_text)`, no symbols_text/subtokens_text columns). Adds
+   * the new columns and drops the old FTS5 table + triggers so the SCHEMA
+   * exec below recreates them with the weighted symbols/subtokens/body
+   * layout. Returns true if a backfill INSERT is needed after SCHEMA runs.
+   * No-op (returns false) for a fresh db or one already on the new schema.
+   */
+  private migrateLegacyFts(): boolean {
+    const cols = this.db.prepare("PRAGMA table_info(chunks)").all() as Array<{
+      name: string;
+    }>;
+    if (cols.length === 0) return false; // fresh db — SCHEMA creates everything
+    if (cols.some((c) => c.name === "symbols_text")) return false; // already migrated
+
+    this.db.exec(`
+      ALTER TABLE chunks ADD COLUMN symbols_text TEXT NOT NULL DEFAULT '';
+      ALTER TABLE chunks ADD COLUMN subtokens_text TEXT NOT NULL DEFAULT '';
+      DROP TRIGGER IF EXISTS chunks_ai;
+      DROP TRIGGER IF EXISTS chunks_ad;
+      DROP TABLE IF EXISTS chunks_fts;
+    `);
+    return true;
   }
 
   private vecTableExists(): boolean {
@@ -181,6 +241,12 @@ export class CodeSearchDb {
       fileMtime: number;
       embeddingProvider: string;
       embedding: Float32Array;
+      /** Raw identifiers (symbol names) declared within this chunk's line
+       * range. Populates the FTS5 `symbols` column verbatim and the
+       * `subtokens` column via camelCase/snake_case splitting. Optional —
+       * defaults to empty (body-only FTS row) when the caller has no
+       * per-chunk symbol correlation. */
+      symbols?: string[];
     }>,
   ): void {
     if (this.vecEnabled && chunks.length > 0) {
@@ -188,8 +254,8 @@ export class CodeSearchDb {
     }
     const insert = this.db.prepare(
       `INSERT INTO chunks
-         (file_path, chunk_text, start_line, end_line, file_mtime, embedding_provider, embedding)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (file_path, chunk_text, symbols_text, subtokens_text, start_line, end_line, file_mtime, embedding_provider, embedding)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const vecInsert = this.vecTableExists()
       ? this.db.prepare(
@@ -199,9 +265,12 @@ export class CodeSearchDb {
     const insertMany = this.db.transaction((rows: typeof chunks) => {
       for (const row of rows) {
         const buf = Buffer.from(row.embedding.buffer);
+        const symbols = row.symbols ?? [];
         const info = insert.run(
           row.filePath,
           row.chunkText,
+          symbols.join(" "),
+          subtokenText(symbols),
           row.startLine,
           row.endLine,
           row.fileMtime,
@@ -318,7 +387,7 @@ export class CodeSearchDb {
         .prepare(
           `SELECT c.id, c.file_path, c.chunk_text, c.start_line, c.end_line,
                   c.file_mtime, c.embedding_provider,
-                  bm25(chunks_fts) AS score
+                  bm25(chunks_fts, ${BM25_SYMBOLS_WEIGHT}, ${BM25_SUBTOKENS_WEIGHT}, ${BM25_BODY_WEIGHT}) AS score
            FROM chunks_fts
            JOIN chunks c ON c.id = chunks_fts.rowid
            WHERE chunks_fts MATCH ?
@@ -445,7 +514,7 @@ export class CodeSearchDb {
       .prepare(
         `SELECT c.id, c.file_path, c.chunk_text, c.start_line, c.end_line,
                 c.file_mtime, c.embedding_provider,
-                bm25(chunks_fts) AS score
+                bm25(chunks_fts, ${BM25_SYMBOLS_WEIGHT}, ${BM25_SUBTOKENS_WEIGHT}, ${BM25_BODY_WEIGHT}) AS score
          FROM chunks_fts
          JOIN chunks c ON c.id = chunks_fts.rowid
          WHERE chunks_fts MATCH ?
