@@ -84,6 +84,27 @@ def dead_code():
     return None
 `,
     );
+
+    // Cross-file usage: helperFn is defined here...
+    fs.writeFileSync(
+      path.join(repo.dir, "util.ts"),
+      `
+export function helperFn(): number {
+  return 1;
+}
+`,
+    );
+    // ...and only ever referenced from a different file.
+    fs.writeFileSync(
+      path.join(repo.dir, "consumer.ts"),
+      `
+import { helperFn } from "./util";
+
+export function run(): number {
+  return helperFn();
+}
+`,
+    );
   });
 
   afterEach(() => {
@@ -91,10 +112,20 @@ def dead_code():
     dbHandle.cleanup();
   });
 
-  it("indexes both fixture files without errors", async () => {
+  it("indexes all fixture files without errors", async () => {
     const result = await indexPath(repo.dir, dbHandle.db, fakeProvider);
     expect(result.errors).toEqual([]);
-    expect(result.indexed).toBe(2);
+    expect(result.indexed).toBe(4);
+  });
+
+  it("refs are a global (cross-file) xref: 'helperFn' is defined in util.ts and only referenced from consumer.ts", async () => {
+    await indexPath(repo.dir, dbHandle.db, fakeProvider);
+    expect(dbHandle.db.queryDefs("helperFn").length).toBeGreaterThan(0);
+    const refs = dbHandle.db.queryRefs("helperFn");
+    expect(refs.length).toBeGreaterThan(0);
+    expect(
+      refs.some((r) => r.path === path.join(repo.dir, "consumer.ts")),
+    ).toBe(true);
   });
 
   it("(a) who calls X: 'verify' resolves to caller 'login' (TypeScript)", async () => {
@@ -145,7 +176,7 @@ def dead_code():
     await indexPath(repo.dir, dbHandle.db, fakeProvider);
     const before = dbHandle.db.defCount();
     const result = await indexPath(repo.dir, dbHandle.db, fakeProvider);
-    expect(result.skipped).toBe(2);
+    expect(result.skipped).toBe(4);
     expect(dbHandle.db.defCount()).toBe(before);
   });
 

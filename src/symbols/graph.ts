@@ -27,6 +27,15 @@ import { extractSymbols } from "./extractor.js";
  *      patterns for defs, plus a light whole-word scan for refs/calls so a
  *      grammarless language (swift, kt, md) or a parse failure still
  *      produces a (lower-fidelity) graph instead of an empty one.
+ *
+ * refs fidelity note: for the fully tree-sitter-verified languages
+ * (ts/tsx/js/py) refs are a *global* name-based xref — every
+ * identifier/type/property occurrence in a file is recorded regardless of
+ * whether that file also defines the name, so `queryRefs("exportedFn")`
+ * finds a call site in a different file. The regex tier's refs are
+ * same-file-only (it only scans for names the current file itself defines)
+ * — a cross-file-only usage of a def from a grammarless/parse-failed file
+ * will look falsely unused. See HANDOFF note in the W3-04 ticket close.
  */
 
 export interface DefRow {
@@ -265,22 +274,29 @@ function extractImports(
 
 /**
  * Walk the tree once, tracking the enclosing def (for calls' `caller`) and
- * emitting refs for any identifier/property/attribute occurrence whose text
- * matches a known def symbol and isn't that def's own name node.
+ * emitting a ref for every identifier/type/property leaf, excluding a def's
+ * own name node.
+ *
+ * Deliberately NOT gated to "only names this file also defines" — Lodestone
+ * does no cross-file type/import resolution (see LODESTONE_DESIGN.md §4
+ * item 4: name-based defs/refs/calls, not an LSP-grade binder), so refs is
+ * a global name-based xref: the only way `queryRefs("exportedFn")` can see
+ * a call site in a *different* file is if that file's own walk recorded the
+ * occurrence too, regardless of whether `exportedFn` is one of that file's
+ * own defs. Gating on same-file defSymbols would make every cross-file
+ * export look permanently unused — the exact case bullet (b) tests for.
  */
 function extractRefsCallsImports(
   tree: Tree,
   filePath: string,
   langId: string,
   adapter: LangAdapter,
-  defs: DefRow[],
 ): { refs: RefRow[]; calls: CallRow[]; imports: ImportRow[] } {
   const refs: RefRow[] = [];
   const calls: CallRow[] = [];
   const imports: ImportRow[] = [];
 
   const callNode = CALL_NODE[langId];
-  const defSymbols = new Set(defs.map((d) => d.symbol));
 
   // Best-effort exclusion set: the exact source range of each def's own
   // "name" node, so its declaration site isn't double-counted as a ref to
@@ -327,13 +343,12 @@ function extractRefsCallsImports(
       }
     }
 
-    // Refs: any identifier-ish leaf whose text names a known def, excluding
-    // the def's own declaration-name node.
+    // Refs: every identifier-ish leaf, excluding the def's own
+    // declaration-name node — see the global-xref rationale above.
     if (
       (node.type === "identifier" ||
         node.type === "type_identifier" ||
         node.type === "property_identifier") &&
-      defSymbols.has(node.text) &&
       !defNameRanges.has(`${node.startIndex}:${node.endIndex}`)
     ) {
       refs.push({
@@ -371,7 +386,6 @@ function extractFromTree(
     filePath,
     langId,
     adapter,
-    defs,
   );
   return { defs, refs, calls, imports, method: "tree-sitter" };
 }
