@@ -19,6 +19,7 @@
     "better-sqlite3": "^11.10.0",
     "glob": "^11.0.0",
     "sqlite-vec": "^0.1.9",
+    "yaml": "^2.9.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {

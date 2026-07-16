@@ -1,0 +1,155 @@
+# Security Concept Ontology — seed v0.1 (2026-07-16)
+# PROPRIETARY — CodeReckon/RepoPulse moat asset. Moves to Lodestone repo when created.
+# Purpose: zero-LLM query expansion. query concept -> union(terms, subtokens, packages)
+#   -> BM25F (symbols boosted) + vector kNN -> RRF -> caller/callee cluster.
+# Also inverts to a COVERAGE signal: concept present in repo but no rule-pack hits => escalation trigger.
+# Seeded from CWE names, OWASP cheat-sheet vocabulary, per-ecosystem package names.
+# Conventions: terms are identifier-fragments (matched raw + camel/snake-split);
+#   packages keyed by ecosystem; cwe = primary CWE anchors for report traceability.
+
+version: 0.1
+concepts:
+  authentication:
+    cwe: [287, 306, 307]
+    terms: [login, logout, signin, signup, authenticate, credential, mfa, totp, otp,
+            sso, oauth, oidc, saml, ldap, kerberos, identity, principal, passwordless, magiclink]
+    packages:
+      npm: [passport, next-auth, "@auth/core", lucia, firebase-auth, "@clerk/clerk-sdk-node", supertokens]
+      pypi: [django-allauth, authlib, flask-login, python-social-auth, fastapi-users]
+      go: [golang.org/x/oauth2, github.com/coreos/go-oidc, github.com/markbates/goth]
+      maven: [spring-security, pac4j, apache-shiro]
+  session_management:
+    cwe: [384, 613]
+    terms: [session, cookie, csrf, xsrf, samesite, httponly, remember_me, sessionid, sid,
+            refresh_token, revoke, expiry, idle_timeout]
+    packages:
+      npm: [express-session, cookie-session, iron-session, csurf]
+      pypi: [itsdangerous, flask-session]
+  tokens_jwt:
+    cwe: [345, 347]
+    terms: [jwt, jwk, jwks, claims, bearer, access_token, id_token, alg, hs256, rs256,
+            audience, issuer, exp, nbf, verify_signature]
+    packages:
+      npm: [jsonwebtoken, jose, fast-jwt]
+      pypi: [pyjwt, python-jose]
+      go: [github.com/golang-jwt/jwt]
+  authorization:
+    cwe: [285, 639, 862, 863]
+    terms: [authorize, permission, role, rbac, abac, acl, policy, scope, grant, entitlement,
+            can, ability, is_admin, owner_id, tenant_id, idor]
+    packages:
+      npm: [casl, casbin, "@aws-sdk/client-verifiedpermissions", oso]
+      pypi: [django-guardian, casbin, oso]
+      go: [github.com/casbin/casbin]
+  password_storage:
+    cwe: [256, 257, 916]
+    terms: [password, passwd, pwd, hash, salt, pepper, bcrypt, scrypt, argon2, pbkdf2,
+            rounds, work_factor, rehash, plaintext]
+    packages:
+      npm: [bcrypt, bcryptjs, argon2]
+      pypi: [passlib, bcrypt, argon2-cffi]
+  cryptography:
+    cwe: [327, 328, 330, 338]
+    terms: [encrypt, decrypt, cipher, aes, gcm, cbc, ecb, rsa, ecdsa, ed25519, hmac, sha1,
+            sha256, md5, iv, nonce, random, prng, keygen, kdf, hkdf, tls, x509, certificate]
+    packages:
+      npm: [crypto, node-forge, tweetnacl, "@noble/ciphers"]
+      pypi: [cryptography, pycryptodome, nacl]
+      go: [crypto/aes, crypto/rand, golang.org/x/crypto]
+  secrets_config:
+    cwe: [798, 522, 312]
+    terms: [secret, api_key, apikey, token, private_key, credentials, dotenv, env, vault,
+            kms, keychain, connection_string, dsn, service_account]
+    packages:
+      npm: [dotenv, "@aws-sdk/client-secrets-manager", node-vault]
+      pypi: [python-dotenv, hvac, boto3]
+  input_validation:
+    cwe: [20, 79, 1287]
+    terms: [validate, sanitize, escape, encode, whitelist, allowlist, schema, coerce, parse,
+            xss, innerhtml, dangerouslysetinnerhtml, eval, strip_tags]
+    packages:
+      npm: [zod, joi, yup, validator, dompurify, ajv, express-validator]
+      pypi: [pydantic, marshmallow, cerberus, bleach]
+      go: [github.com/go-playground/validator]
+  sql_database:
+    cwe: [89, 943]
+    terms: [query, execute, raw, prepared, parameterize, placeholder, sql_injection, sqli,
+            orm, migration, transaction, escape_string, format_sql]
+    packages:
+      npm: [pg, mysql2, knex, prisma, drizzle-orm, typeorm, sequelize]
+      pypi: [sqlalchemy, psycopg2, django.db, asyncpg]
+      go: [database/sql, github.com/jmoiron/sqlx, gorm.io/gorm]
+  deserialization:
+    cwe: [502]
+    terms: [deserialize, unserialize, pickle, loads, unmarshal, yaml_load, readobject,
+            fromjson, parse_obj, gob, marshal]
+    packages:
+      pypi: [pickle, dill, pyyaml, jsonpickle]
+      npm: [serialize-javascript, node-serialize]
+  file_upload_path:
+    cwe: [22, 434, 73]
+    terms: [upload, multipart, filename, mimetype, path_traversal, basename, realpath, resolve,
+            sendfile, readfile, writefile, tmpdir, symlink, zip_slip, extract]
+    packages:
+      npm: [multer, formidable, busboy, adm-zip, tar]
+      pypi: [werkzeug.utils, secure_filename, zipfile, tarfile]
+  ssrf_outbound:
+    cwe: [918]
+    terms: [fetch, request, urlopen, webhook, callback_url, redirect_uri, proxy, internal,
+            metadata, 169.254.169.254, localhost, dns_rebind, url_parse]
+    packages:
+      npm: [axios, node-fetch, got, undici]
+      pypi: [requests, httpx, urllib]
+  command_execution:
+    cwe: [77, 78, 94]
+    terms: [exec, spawn, system, popen, shell, subprocess, cmd, shell_true, backtick,
+            child_process, os_system, template_injection, ssti]
+    packages:
+      npm: [child_process, execa, shelljs]
+      pypi: [subprocess, os.system, jinja2]
+  logging_audit:
+    cwe: [117, 532, 778]
+    terms: [log, logger, audit, trail, redact, mask, pii_in_logs, console_log, print,
+            structured, correlation_id, trace_id, syslog]
+    packages:
+      npm: [winston, pino, morgan, bunyan]
+      pypi: [logging, structlog, loguru]
+      go: [log/slog, go.uber.org/zap]
+  rate_limiting_dos:
+    cwe: [770, 400, 799]
+    terms: [rate_limit, ratelimit, throttle, quota, backoff, retry, circuit_breaker, bucket,
+            token_bucket, leaky, concurrency, semaphore, timeout, deadline, max_requests]
+    packages:
+      npm: [express-rate-limit, bottleneck, p-limit, rate-limiter-flexible]
+      pypi: [slowapi, limits, tenacity]
+  http_headers_cors:
+    cwe: [346, 942, 1021]
+    terms: [cors, origin, access_control_allow, csp, content_security_policy, hsts, x_frame,
+            referrer_policy, helmet, preflight, wildcard_origin, clickjack]
+    packages:
+      npm: [cors, helmet]
+      pypi: [django-cors-headers, flask-cors]
+  payment_billing:
+    cwe: [840]
+    terms: [payment, charge, invoice, subscription, refund, checkout, price, amount, currency,
+            webhook_signature, idempotency_key, stripe, plaid, billing]
+    packages:
+      npm: [stripe, braintree, "@paypal/checkout-server-sdk"]
+      pypi: [stripe, braintree]
+  pii_data:
+    cwe: [359, 200, 311]
+    terms: [pii, ssn, dob, email, phone, address, gdpr, ccpa, consent, retention, erasure,
+            anonymize, pseudonymize, redact, export_data, right_to_delete]
+    packages: {}
+  llm_ai:
+    cwe: [1426]  # + OWASP LLM Top-10 2025 mapping lives in rule packs
+    terms: [prompt, completion, system_prompt, tool_call, function_call, agent, rag, embedding,
+            temperature, max_tokens, prompt_injection, jailbreak, guardrail, moderation]
+    packages:
+      npm: ["@anthropic-ai/sdk", openai, langchain, llamaindex, ai]
+      pypi: [anthropic, openai, langchain, llama-index, litellm]
+  infra_iac:
+    cwe: [16, 1188]
+    terms: [terraform, cloudformation, pulumi, dockerfile, compose, helm, kubernetes, iam,
+            security_group, bucket_policy, public_read, privileged, host_network, root_user]
+    packages: {}
