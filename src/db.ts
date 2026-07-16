@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import type { ProviderMeta } from "./embeddings/index.js";
 import type { CodeSymbol, SymbolKind } from "./symbols/extractor.js";
+import type { DefRow, RefRow, CallRow, ImportRow } from "./symbols/graph.js";
 import { subtokenText } from "./search/subtokens.js";
 
 export interface Chunk {
@@ -88,6 +89,59 @@ CREATE TABLE IF NOT EXISTS symbols (
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
+
+-- Symbol graph tables (see docs/LODESTONE_DESIGN.md §4 item 4 and
+-- src/symbols/graph.ts). Additive to the existing "symbols" table above
+-- (which stays as-is for outline/rename-style name lookups); these back
+-- "who calls X" / "is export Y unused" / import-map queries. Tier-1
+-- retrieval (W3-06) is the consumer — nothing in this repo queries them yet.
+CREATE TABLE IF NOT EXISTS defs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol     TEXT    NOT NULL,
+  file_path  TEXT    NOT NULL,
+  start_line INTEGER NOT NULL,
+  end_line   INTEGER NOT NULL,
+  kind       TEXT    NOT NULL,
+  file_mtime INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_defs_symbol ON defs(symbol COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_defs_file ON defs(file_path);
+
+CREATE TABLE IF NOT EXISTS refs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol     TEXT    NOT NULL,
+  file_path  TEXT    NOT NULL,
+  line       INTEGER NOT NULL,
+  file_mtime INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_refs_symbol ON refs(symbol COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_refs_file ON refs(file_path);
+
+CREATE TABLE IF NOT EXISTS calls (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  caller     TEXT    NOT NULL,
+  callee     TEXT    NOT NULL,
+  file_path  TEXT    NOT NULL,
+  line       INTEGER NOT NULL,
+  file_mtime INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_calls_file ON calls(file_path);
+
+CREATE TABLE IF NOT EXISTS imports (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_path         TEXT    NOT NULL,
+  to_path_or_module TEXT    NOT NULL,
+  line              INTEGER NOT NULL,
+  file_mtime        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_imports_from ON imports(from_path);
+CREATE INDEX IF NOT EXISTS idx_imports_to ON imports(to_path_or_module);
 `;
 
 // bm25() column weights, in chunks_fts column order [symbols, subtokens, body].
@@ -230,6 +284,10 @@ export class CodeSearchDb {
     }
     this.db.prepare("DELETE FROM chunks WHERE file_path = ?").run(filePath);
     this.db.prepare("DELETE FROM symbols WHERE file_path = ?").run(filePath);
+    this.db.prepare("DELETE FROM defs WHERE file_path = ?").run(filePath);
+    this.db.prepare("DELETE FROM refs WHERE file_path = ?").run(filePath);
+    this.db.prepare("DELETE FROM calls WHERE file_path = ?").run(filePath);
+    this.db.prepare("DELETE FROM imports WHERE from_path = ?").run(filePath);
   }
 
   insertChunks(
@@ -376,6 +434,158 @@ export class CodeSearchDb {
       line: r.line,
       signature: r.signature,
     }));
+  }
+
+  insertDefs(rows: Array<DefRow & { fileMtime: number }>): void {
+    const insert = this.db.prepare(
+      `INSERT INTO defs (symbol, file_path, start_line, end_line, kind, file_mtime)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    const insertMany = this.db.transaction((items: typeof rows) => {
+      for (const r of items) {
+        insert.run(
+          r.symbol,
+          r.path,
+          r.startLine,
+          r.endLine,
+          r.kind,
+          r.fileMtime,
+        );
+      }
+    });
+    insertMany(rows);
+  }
+
+  insertRefs(rows: Array<RefRow & { fileMtime: number }>): void {
+    const insert = this.db.prepare(
+      `INSERT INTO refs (symbol, file_path, line, file_mtime)
+       VALUES (?, ?, ?, ?)`,
+    );
+    const insertMany = this.db.transaction((items: typeof rows) => {
+      for (const r of items) insert.run(r.symbol, r.path, r.line, r.fileMtime);
+    });
+    insertMany(rows);
+  }
+
+  insertCalls(rows: Array<CallRow & { fileMtime: number }>): void {
+    const insert = this.db.prepare(
+      `INSERT INTO calls (caller, callee, file_path, line, file_mtime)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    const insertMany = this.db.transaction((items: typeof rows) => {
+      for (const r of items) {
+        insert.run(r.caller, r.callee, r.path, r.line, r.fileMtime);
+      }
+    });
+    insertMany(rows);
+  }
+
+  insertImports(rows: Array<ImportRow & { fileMtime: number }>): void {
+    const insert = this.db.prepare(
+      `INSERT INTO imports (from_path, to_path_or_module, line, file_mtime)
+       VALUES (?, ?, ?, ?)`,
+    );
+    const insertMany = this.db.transaction((items: typeof rows) => {
+      for (const r of items) {
+        insert.run(r.fromPath, r.toPathOrModule, r.line, r.fileMtime);
+      }
+    });
+    insertMany(rows);
+  }
+
+  /** "Who calls X" — callers of `symbol` across the index. */
+  queryCallers(
+    symbol: string,
+  ): Array<{ caller: string; path: string; line: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT caller, file_path, line FROM calls WHERE callee = ? ORDER BY file_path, line`,
+      )
+      .all(symbol) as Array<{
+      caller: string;
+      file_path: string;
+      line: number;
+    }>;
+    return rows.map((r) => ({
+      caller: r.caller,
+      path: r.file_path,
+      line: r.line,
+    }));
+  }
+
+  /** "What does X call" — callees invoked from within `caller`. */
+  queryCallees(
+    caller: string,
+  ): Array<{ callee: string; path: string; line: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT callee, file_path, line FROM calls WHERE caller = ? ORDER BY file_path, line`,
+      )
+      .all(caller) as Array<{
+      callee: string;
+      file_path: string;
+      line: number;
+    }>;
+    return rows.map((r) => ({
+      callee: r.callee,
+      path: r.file_path,
+      line: r.line,
+    }));
+  }
+
+  /** All references to `symbol` across the index (excludes the def site). */
+  queryRefs(symbol: string): Array<{ path: string; line: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT file_path, line FROM refs WHERE symbol = ? ORDER BY file_path, line`,
+      )
+      .all(symbol) as Array<{ file_path: string; line: number }>;
+    return rows.map((r) => ({ path: r.file_path, line: r.line }));
+  }
+
+  /** All defs recorded for `symbol` (a def with an empty queryRefs() result
+   *  and no incoming queryCallers() is a dead-code candidate). */
+  queryDefs(symbol: string): Array<DefRow> {
+    const rows = this.db
+      .prepare(
+        `SELECT symbol, file_path, start_line, end_line, kind FROM defs WHERE symbol = ? ORDER BY file_path, start_line`,
+      )
+      .all(symbol) as Array<{
+      symbol: string;
+      file_path: string;
+      start_line: number;
+      end_line: number;
+      kind: string;
+    }>;
+    return rows.map((r) => ({
+      symbol: r.symbol,
+      path: r.file_path,
+      startLine: r.start_line,
+      endLine: r.end_line,
+      kind: r.kind,
+    }));
+  }
+
+  /** All imports recorded for a given source file. */
+  queryImports(
+    fromPath: string,
+  ): Array<{ toPathOrModule: string; line: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT to_path_or_module, line FROM imports WHERE from_path = ? ORDER BY line`,
+      )
+      .all(fromPath) as Array<{ to_path_or_module: string; line: number }>;
+    return rows.map((r) => ({
+      toPathOrModule: r.to_path_or_module,
+      line: r.line,
+    }));
+  }
+
+  defCount(): number {
+    const row = this.db.prepare("SELECT COUNT(*) as n FROM defs").get() as {
+      n: number;
+    };
+    return row.n;
   }
 
   /** FTS search for a symbol name — used by code_references. */
