@@ -43,10 +43,19 @@ still says 0.4.0.
   previously reopened the same database file, so the mtime gate still skipped
   every unchanged file.
 - The MCP server reported version `0.2.0`; it now reports `0.4.0`.
+- The index now records the embedding model name and the dimension measured
+  from a real embedding, not just the provider name and a hardcoded 768. A
+  provider, model or dimension change makes `code_search` and `code_index`
+  refuse with a pointer to `code_index(force=true)`, which clears the old
+  index and rebuilds it (previously a provider change left `code_index`
+  reporting "no provider" even with `force=true`). Older indexes without a
+  recorded model are treated as "model unknown" and not refused for it.
+- `.cc`, `.cxx`, `.hpp` and `.kts` files are now indexed; the chunker and
+  symbol extractor already handled them but the indexer never picked them up.
 
 ### Tests
 
-- 153 tests green.
+- 172 tests green.
 
 ## [0.4.0] — 2026-07-14
 
