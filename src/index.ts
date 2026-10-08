@@ -40,7 +40,7 @@ async function getProvider(): Promise<EmbeddingProvider | null> {
   return provider;
 }
 
-const server = new McpServer({ name: "bpm-code-search-mcp", version: "0.2.0" });
+const server = new McpServer({ name: "bpm-code-search-mcp", version: "0.4.0" });
 
 // ─── Semantic search ──────────────────────────────────────────────────────────
 
@@ -366,7 +366,7 @@ server.tool(
 
 server.tool(
   "code_references",
-  "Find all code chunks that reference (mention) a specific symbol name. Useful for tracing where a function, class, or type is used across the codebase.",
+  "Find the lines that reference (mention) a specific symbol name, each as file:line with surrounding context and a [def]/[use] tag. Useful for tracing where a function, class, or type is used across the codebase.",
   {
     name: z
       .string()
