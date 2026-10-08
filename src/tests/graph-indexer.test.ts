@@ -9,6 +9,7 @@ import type { EmbeddingProvider } from "../embeddings/index.js";
 /** Deterministic fake provider — no network, fixed-dim zero-ish vectors. */
 const fakeProvider: EmbeddingProvider = {
   name: "fake",
+  model: "fake-model",
   dim: 8,
   async embed(texts: string[]) {
     return texts.map((t) => {

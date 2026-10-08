@@ -9,6 +9,7 @@ import type { EmbeddingProvider } from "../embeddings/index.js";
 
 const fakeProvider: EmbeddingProvider = {
   name: "fake",
+  model: "fake-model",
   dim: 8,
   async embed(texts: string[]) {
     return texts.map((t) => {

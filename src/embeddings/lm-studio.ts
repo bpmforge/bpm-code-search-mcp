@@ -2,9 +2,9 @@ import type { EmbeddingProvider } from "./types.js";
 
 export class LmStudioProvider implements EmbeddingProvider {
   readonly name = "lm-studio";
+  readonly model: string;
   readonly dim: number;
   private readonly baseUrl: string;
-  private readonly model: string;
 
   constructor(
     options: { baseUrl?: string; model?: string; dim?: number } = {},

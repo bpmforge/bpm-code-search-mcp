@@ -1,6 +1,6 @@
 import { CodeSearchDb, type SearchResult } from "./db.js";
 import type { EmbeddingProvider } from "./embeddings/index.js";
-import { providerFromMeta } from "./embeddings/index.js";
+import { matchesMeta, providerFromMeta } from "./embeddings/index.js";
 
 export interface SearchOptions {
   topK?: number;
@@ -81,7 +81,7 @@ export async function search(
   let vecResults: SearchResult[] = [];
   if (meta) {
     let provider = activeProvider;
-    if (!provider || provider.name !== meta.name || provider.dim !== meta.dim) {
+    if (!provider || !matchesMeta(provider, meta)) {
       try {
         provider = providerFromMeta(meta);
       } catch {

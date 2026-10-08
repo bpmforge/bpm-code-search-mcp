@@ -22,7 +22,7 @@ Works with **Claude Code**, **OpenCode**, or any MCP client. Auto-installed by [
 - **Vector index** — chunks are embedded via LM Studio (`nomic-embed-text` by default) and stored in SQLite; queries use a `sqlite-vec` ANN index, falling back to a brute-force cosine scan if the extension can't load
 - **Keyword fallback** — if the embedding provider is unavailable at query time, search degrades to keyword-only instead of erroring
 - **Symbol index** — regex extraction at index time covering 10 languages plus Markdown headings, alongside a symbol graph (defs/refs/calls/imports)
-- **Provider sticky** — the provider name and vector dimension used at index time are recorded; a mismatched provider disables vector search rather than silently mixing vector spaces
+- **Embedder sticky** — the provider, model name and measured vector dimension used at index time are recorded; if any of them changes, `code_search` and `code_index` refuse with a message to run `code_index(force=true)`, which clears the old index and rebuilds it, rather than silently mixing vector spaces
 
 ## Symbol extraction covers
 
@@ -86,7 +86,7 @@ export LM_STUDIO_MODEL="CompendiumLabs/bge-large-en-v1.5-gguf"  # example
 ### Other OpenAI-compatible servers
 Any server exposing `GET /v1/models` and `POST /v1/embeddings` works. `LM_STUDIO_URL` is the server root — the client appends `/v1/...` itself, so do not include `/v1`. No `Authorization` header is sent, so hosted APIs that require an API key are not supported.
 
-> **Provider-sticky:** Only the provider name and vector dimension are recorded at index time, not the model name. If you change models, re-index with `code_index(force=true)` so every file is re-embedded with the new model.
+> **Embedder-sticky:** The provider, model name and the dimension of the first real embedding are recorded at index time. After you change `LM_STUDIO_MODEL` (or the provider), `code_search` and `code_index` refuse until you run `code_index(force=true)`, which wipes the old index and re-embeds every file with the new model. Indexes built before the model was recorded show `Model: unknown` in `code_index_status` and are not refused on that basis; `code_index(force=true)` rebuilds them and records the model.
 
 ### Remote LM Studio server
 ```bash
