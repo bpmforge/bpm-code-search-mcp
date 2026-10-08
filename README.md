@@ -28,7 +28,7 @@ Works with **Claude Code**, **OpenCode**, or any MCP client. Auto-installed by [
 
 TypeScript/JS · Python · Go · Rust · Java · C# · Ruby · PHP · Swift · Kotlin · Markdown headings
 
-Files indexed by default: `.ts .tsx .js .jsx .mjs .cjs .py .rs .go .java .cs .cpp .c .h .rb .php .swift .kt .md .mdx` (skipping `node_modules`, `dist`, `build`, `.git`, `coverage`, `*.min.js`, `*.map`). The index lives at `.code-search/index.db` under the project root.
+Files indexed by default: `.ts .tsx .js .jsx .mjs .cjs .py .rs .go .java .cs .cpp .cc .cxx .hpp .c .h .rb .php .swift .kt .kts .md .mdx` (skipping `node_modules`, `dist`, `build`, `.git`, `coverage`, `*.min.js`, `*.map`). The index lives at `.code-search/index.db` under the project root.
 
 ## Install
 
