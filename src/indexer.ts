@@ -52,7 +52,7 @@ export async function indexPath(
   rootPath: string,
   db: CodeSearchDb,
   provider: EmbeddingProvider,
-  options: { include?: string[]; ignore?: string[] } = {},
+  options: { include?: string[]; ignore?: string[]; force?: boolean } = {},
 ): Promise<IndexResult> {
   const include = options.include ?? DEFAULT_INCLUDE;
   const ignore = options.ignore ?? DEFAULT_IGNORE;
@@ -74,7 +74,7 @@ export async function indexPath(
       const mtime = Math.floor(stat.mtimeMs);
       const stored = db.getFileMtime(filePath);
 
-      if (stored === mtime) {
+      if (!options.force && stored === mtime) {
         skipped++;
         continue;
       }

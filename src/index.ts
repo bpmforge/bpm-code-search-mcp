@@ -151,13 +151,12 @@ server.tool(
       const targetPath = subPath ? path.resolve(ROOT, subPath) : ROOT;
 
       if (force) {
-        db.close();
-        const freshDb = new CodeSearchDb(DB_PATH);
-        Object.assign(db, freshDb);
         db.setProviderMeta({ name: p.name, dim: p.dim });
       }
 
-      const result = await indexPath(targetPath, db, p);
+      // The mtime gate lives in indexPath, so `force` has to reach it there;
+      // reopening the db file alone leaves every stored mtime in place.
+      const result = await indexPath(targetPath, db, p, { force });
       const summary = [
         `Indexed ${result.indexed} file(s), skipped ${result.skipped} unchanged.`,
         `Total: ${db.fileCount()} files, ${db.chunkCount()} chunks, ${db.symbolCount()} symbols in index.`,

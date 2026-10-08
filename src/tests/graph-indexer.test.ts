@@ -180,6 +180,19 @@ export function run(): number {
     expect(dbHandle.db.defCount()).toBe(before);
   });
 
+  it("force re-indexes unchanged files instead of skipping them", async () => {
+    await indexPath(repo.dir, dbHandle.db, fakeProvider);
+    const chunksBefore = dbHandle.db.chunkCount();
+    const defsBefore = dbHandle.db.defCount();
+    const result = await indexPath(repo.dir, dbHandle.db, fakeProvider, {
+      force: true,
+    });
+    expect(result.indexed).toBe(4);
+    expect(result.skipped).toBe(0);
+    expect(dbHandle.db.chunkCount()).toBe(chunksBefore);
+    expect(dbHandle.db.defCount()).toBe(defsBefore);
+  });
+
   it("re-indexing a changed file replaces its graph rows without leaking stale ones", async () => {
     await indexPath(repo.dir, dbHandle.db, fakeProvider);
     expect(dbHandle.db.queryDefs("deadCode").length).toBe(1);
