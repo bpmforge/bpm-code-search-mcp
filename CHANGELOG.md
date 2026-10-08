@@ -4,6 +4,50 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Work merged to `main` after v0.4.0 (2026-07-16 → 2026-09-28). `package.json`
+still says 0.4.0.
+
+### Added
+
+- **Symbol graph tables** (`defs`, `refs`, `calls`, `imports`) populated at
+  index time — tree-sitter extraction with a regex fallback for grammarless
+  languages. `refs` is a global cross-file xref.
+- **Retrieval pipeline library** (`src/search/query.ts`): ontology expansion →
+  BM25F + vector kNN + exact-identifier match → RRF → rank adjustment →
+  1-hop caller/callee clustering, plus evidence packets (`src/packet/`). Not
+  yet exposed as an MCP tool.
+- **Concept ontology** (`ontology/concepts.yaml`, `src/ontology/`) with
+  `expand()`; 42 concepts covering OWASP Top-10 (web 2021, LLM 2025) and the
+  CWE Top-25 (2024).
+- **Golden retrieval eval** (`eval/`): 16 judgments over a 12-file fixture
+  repo with Recall@k / MRR metrics and a regression floor
+  (measured Recall@5 = 0.906, MRR = 0.437).
+- `docs/LODESTONE_DESIGN.md` design document.
+- `.node-version` pins Node 24.
+
+### Changed
+
+- **cAST tree-sitter chunker** replaces the 60-line window: chunks at
+  function/method/class granularity (split-then-merge, ~1200-token budget)
+  for TS/TSX/JS, Python, Go, Rust, Java, C#, Ruby, PHP, C and C++. The
+  sliding window remains the fallback for other files and parse failures.
+- **BM25F keyword ranking**: the FTS5 table now has weighted `symbols`,
+  `subtokens` (camelCase/snake_case splits) and `body` columns. Existing
+  indexes are migrated in place and backfilled on open.
+
+### Fixed
+
+- `code_index(force=true)` now actually re-indexes unchanged files. It
+  previously reopened the same database file, so the mtime gate still skipped
+  every unchanged file.
+- The MCP server reported version `0.2.0`; it now reports `0.4.0`.
+
+### Tests
+
+- 153 tests green.
+
 ## [0.4.0] — 2026-07-14
 
 Tier C — ANN vector index (staged code-search enhancement plan, 3 of 3).
@@ -34,6 +78,7 @@ Tier C — ANN vector index (staged code-search enhancement plan, 3 of 3).
 - `ann.test.ts`: extension loads, nearest-first ranking with cosine scores, ANN
   rows dropped on file delete, and ANN ranking agrees with the brute-force scan.
   55 tests green.
+
 ## [0.3.0] — 2026-07-14
 
 Tier B — hybrid search (staged code-search enhancement plan, 2 of 3).
@@ -55,6 +100,7 @@ Tier B — hybrid search (staged code-search enhancement plan, 2 of 3).
 
 - `toFtsQuery`, `rrfFuse` (both-lists-rank-higher, de-dup), and a both-sides
   fusion path. 51 tests green.
+
 ## [0.2.0] — 2026-07-14
 
 Tier A — response quality & robustness (staged code-search enhancement plan, 1 of 3).
@@ -84,3 +130,26 @@ Tier A — response quality & robustness (staged code-search enhancement plan, 1
 - `format.test.ts` (line extraction, def/use tagging, word-boundary, de-dup,
   truncation, snippet capping) and `search-fallback.test.ts` (FTS fallback on
   embed failure / no index). 46 tests green.
+
+## [0.1.0] — 2026-06-02
+
+Initial release. The git tag `v1.0.0` points at this release (commit
+`94f48f5`), whose `package.json` says 0.1.0.
+
+### Added
+
+- MCP tools `code_search` (semantic search, cosine similarity), `code_index`
+  (mtime-gated indexing) and `code_index_status`.
+- Symbol index layer with MCP tools `code_symbols`, `code_outline` and
+  `code_references`: regex extraction for TS/JS, Python, Go, Rust, Java, C#,
+  Ruby, PHP, Swift, Kotlin and Markdown headings.
+- LM Studio embedding provider (`nomic-embed-text-v1.5`), provider identity
+  recorded in the index; FTS5 keyword fallback.
+- 60-line sliding-window chunker (15-line overlap); SQLite (WAL) index at
+  `.code-search/index.db`.
+- Configuration via `CODE_SEARCH_ROOT`, `LM_STUDIO_URL`, `LM_STUDIO_MODEL`.
+- README.
+
+### Tests
+
+- 36 tests green.
