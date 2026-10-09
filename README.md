@@ -103,4 +103,4 @@ export LM_STUDIO_URL="http://192.168.1.x:1234"
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
