@@ -4,7 +4,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { CodeSearchDb } from "./db.js";
-import { detectProvider } from "./embeddings/index.js";
+import {
+  checkCompat,
+  detectProvider,
+  ensureCompatibleIndex,
+  metaFor,
+  mismatchMessage,
+} from "./embeddings/index.js";
 import type { EmbeddingProvider } from "./embeddings/index.js";
 import { indexPath } from "./indexer.js";
 import { search } from "./search.js";
@@ -19,6 +25,9 @@ const LM_STUDIO_MODEL =
 const db = new CodeSearchDb(DB_PATH);
 let provider: EmbeddingProvider | null = null;
 
+// Detection only; whether the detected embedder may use the stored index is
+// decided per call (checkCompat / ensureCompatibleIndex), so a mismatch can
+// be reported instead of looking like "no provider".
 async function getProvider(): Promise<EmbeddingProvider | null> {
   if (provider) return provider;
   try {
@@ -26,21 +35,13 @@ async function getProvider(): Promise<EmbeddingProvider | null> {
       lmStudioUrl: LM_STUDIO_URL,
       lmStudioModel: LM_STUDIO_MODEL,
     });
-    const meta = db.getProviderMeta();
-    if (!meta) {
-      db.setProviderMeta({ name: provider.name, dim: provider.dim });
-    } else if (meta.name !== provider.name || meta.dim !== provider.dim) {
-      // Provider changed since last index — require re-index
-      provider = null;
-      return null;
-    }
   } catch {
     provider = null;
   }
   return provider;
 }
 
-const server = new McpServer({ name: "bpm-code-search-mcp", version: "0.2.0" });
+const server = new McpServer({ name: "bpm-code-search-mcp", version: "0.4.0" });
 
 // ─── Semantic search ──────────────────────────────────────────────────────────
 
@@ -80,6 +81,21 @@ server.tool(
             },
           ],
         };
+      }
+      if (p) {
+        const compat = checkCompat(
+          db.getProviderMeta(),
+          metaFor(p),
+          db.storedEmbeddingDim(),
+        );
+        if (!compat.ok) {
+          return {
+            content: [
+              { type: "text" as const, text: mismatchMessage(compat.reason) },
+            ],
+            isError: true,
+          };
+        }
       }
 
       const results = await search(query, db, p, {
@@ -131,7 +147,9 @@ server.tool(
       .boolean()
       .optional()
       .default(false)
-      .describe("Force re-index all files, ignoring mtime cache"),
+      .describe(
+        "Force re-index all files, ignoring mtime cache. Required after the embedding model or provider changes; the old index is cleared first.",
+      ),
   },
   async ({ path: subPath, force }) => {
     try {
@@ -150,15 +168,21 @@ server.tool(
 
       const targetPath = subPath ? path.resolve(ROOT, subPath) : ROOT;
 
-      if (force) {
-        db.close();
-        const freshDb = new CodeSearchDb(DB_PATH);
-        Object.assign(db, freshDb);
-        db.setProviderMeta({ name: p.name, dim: p.dim });
+      const gate = ensureCompatibleIndex(db, p, { force });
+      if (!gate.ok) {
+        return {
+          content: [{ type: "text" as const, text: gate.message }],
+          isError: true,
+        };
       }
 
-      const result = await indexPath(targetPath, db, p);
+      // The mtime gate lives in indexPath, so `force` has to reach it there;
+      // reopening the db file alone leaves every stored mtime in place.
+      const result = await indexPath(targetPath, db, p, { force });
       const summary = [
+        gate.cleared
+          ? "Embedding model changed or unrecorded: cleared the old index before rebuilding."
+          : "",
         `Indexed ${result.indexed} file(s), skipped ${result.skipped} unchanged.`,
         `Total: ${db.fileCount()} files, ${db.chunkCount()} chunks, ${db.symbolCount()} symbols in index.`,
         result.errors.length > 0
@@ -193,7 +217,7 @@ server.tool(
     const files = db.fileCount();
     const symbols = db.symbolCount();
     const status = meta
-      ? `Provider: ${meta.name} (dim=${meta.dim})\nFiles: ${files}\nChunks: ${chunks}\nSymbols: ${symbols}\nIndex: ${DB_PATH}`
+      ? `Provider: ${meta.name}\nModel: ${meta.model ?? "unknown (run code_index(force=true) to record it)"}\nDimension: ${meta.model ? meta.dim : (db.storedEmbeddingDim() ?? "unknown")}\nFiles: ${files}\nChunks: ${chunks}\nSymbols: ${symbols}\nIndex: ${DB_PATH}`
       : `No index yet. Run code_index to build it.\nIndex location: ${DB_PATH}`;
     return { content: [{ type: "text" as const, text: status }] };
   },
@@ -367,7 +391,7 @@ server.tool(
 
 server.tool(
   "code_references",
-  "Find all code chunks that reference (mention) a specific symbol name. Useful for tracing where a function, class, or type is used across the codebase.",
+  "Find the lines that reference (mention) a specific symbol name, each as file:line with surrounding context and a [def]/[use] tag. Useful for tracing where a function, class, or type is used across the codebase.",
   {
     name: z
       .string()

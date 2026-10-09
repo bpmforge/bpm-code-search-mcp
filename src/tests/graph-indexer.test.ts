@@ -9,6 +9,7 @@ import type { EmbeddingProvider } from "../embeddings/index.js";
 /** Deterministic fake provider — no network, fixed-dim zero-ish vectors. */
 const fakeProvider: EmbeddingProvider = {
   name: "fake",
+  model: "fake-model",
   dim: 8,
   async embed(texts: string[]) {
     return texts.map((t) => {
@@ -178,6 +179,19 @@ export function run(): number {
     const result = await indexPath(repo.dir, dbHandle.db, fakeProvider);
     expect(result.skipped).toBe(4);
     expect(dbHandle.db.defCount()).toBe(before);
+  });
+
+  it("force re-indexes unchanged files instead of skipping them", async () => {
+    await indexPath(repo.dir, dbHandle.db, fakeProvider);
+    const chunksBefore = dbHandle.db.chunkCount();
+    const defsBefore = dbHandle.db.defCount();
+    const result = await indexPath(repo.dir, dbHandle.db, fakeProvider, {
+      force: true,
+    });
+    expect(result.indexed).toBe(4);
+    expect(result.skipped).toBe(0);
+    expect(dbHandle.db.chunkCount()).toBe(chunksBefore);
+    expect(dbHandle.db.defCount()).toBe(defsBefore);
   });
 
   it("re-indexing a changed file replaces its graph rows without leaking stale ones", async () => {

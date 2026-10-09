@@ -266,6 +266,34 @@ export class CodeSearchDb {
       .run("provider", JSON.stringify(meta));
   }
 
+  /**
+   * Width of the vectors actually stored, read from one chunk's blob
+   * (float32, so bytes / 4). Null for an empty index.
+   */
+  storedEmbeddingDim(): number | null {
+    const row = this.db
+      .prepare("SELECT length(embedding) AS bytes FROM chunks LIMIT 1")
+      .get() as { bytes: number } | undefined;
+    return row ? row.bytes / 4 : null;
+  }
+
+  /**
+   * Remove every indexed file plus the embedder record and ANN table, so a
+   * rebuild under a different model starts from nothing.
+   */
+  clearIndex(): void {
+    this.db.transaction(() => {
+      for (const table of ["chunks", "symbols", "defs", "refs", "calls", "imports"]) {
+        this.db.exec(`DELETE FROM ${table}`);
+      }
+      this.db.exec("DELETE FROM meta WHERE key IN ('provider', 'vec_dim')");
+      // Dropping a vec0 table needs the extension loaded; without it the
+      // table is never read, and ensureVecTable recreates it on next load.
+      if (this.vecEnabled) this.db.exec("DROP TABLE IF EXISTS vec_chunks");
+    })();
+    this.vecDim = null;
+  }
+
   getFileMtime(filePath: string): number | null {
     const row = this.db
       .prepare("SELECT file_mtime FROM chunks WHERE file_path = ? LIMIT 1")

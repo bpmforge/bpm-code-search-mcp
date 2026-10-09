@@ -1,6 +1,6 @@
 import type { CodeSearchDb, SearchResult } from "../db.js";
 import type { EmbeddingProvider } from "../embeddings/index.js";
-import { providerFromMeta } from "../embeddings/index.js";
+import { matchesMeta, providerFromMeta } from "../embeddings/index.js";
 import { toFtsQuery, rrfFuse } from "../search.js";
 import { expand } from "../ontology/index.js";
 import { isCrossFileGraphReliable } from "./graphReliability.js";
@@ -107,7 +107,7 @@ async function vectorResults(
   const meta = db.getProviderMeta();
   if (!meta) return [];
   let provider = activeProvider;
-  if (!provider || provider.name !== meta.name || provider.dim !== meta.dim) {
+  if (!provider || !matchesMeta(provider, meta)) {
     try {
       provider = providerFromMeta(meta);
     } catch {
